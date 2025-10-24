@@ -281,6 +281,11 @@ $$
 - **修正方法**：`halo/diff_correction.py` 与 `solvers/*`；**多段**与**配点**可并列对比。  
 - **优化**：`mission/transfer_opt.py` 实现轻量 **NSGA‑II**；前沿与超体积在 `plots/plotting.py` 可视化。  
 - **定轨**：`od/estimation.py` 的 Batch LS/EKF 与 CRB。
+<img width="960" height="640" alt="fig_02_streamplot" src="https://github.com/user-attachments/assets/3ee88ad4-b5e7-4ead-9c65-d117c21063f4" />
+<img width="960" height="768" alt="fig_03_halo3d" src="https://github.com/user-attachments/assets/92245c54-10ae-4217-9007-f9f7d996af9f" />
+<img width="880" height="832" alt="fig_10_polar_heat" src="https://github.com/user-attachments/assets/77440897-c60f-4cc4-89e0-1015b273fb9d" />
+<img width="960" height="672" alt="fig_08_defect_contour" src="https://github.com/user-attachments/assets/7d356c57-1351-45bf-8bc9-b93f343104a4" />
+<img width="800" height="800" alt="fig_15_eigs_complex" src="https://github.com/user-attachments/assets/0f8e4d9e-0a71-48c7-af6d-c9704e01aa5c" />
 
 ---
 
