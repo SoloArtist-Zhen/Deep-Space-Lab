@@ -1,233 +1,288 @@
 
-# Ultra-Fast Deep-Space Attitude Control Lab — 详细说明（含 $\LaTeX$ 数学公式）
+# Deep‑Space Lab（高级版 README）
+**Halo 族线 + STM 真导数 + 多段/配点修正 + SRP/J2 摄动力 + 多目标 NSGA‑II + 精密定轨（Batch/EKF/CRB）**  
+> 面向顶会/顶刊指标的**可运行研究底座**。仅依赖：`numpy`、`matplotlib`。所有算法与可视化在仓库内自包含。
 
-> 面向“深空探测器姿态控制”的**极速可复现**研究底座。聚焦 **MPC + 自适应** 与 **LQR / H∞-like** 的**算法对比**，在**复杂空间环境**（热致惯量变化、SRP 扭矩代理、辐射噪声）与**故障模式**（传感器偏置跳变、执行器饱和/轴卡滞）下进行快速仿真，**一次运行生成 15 张高级图**。  
+---
 
-运行：
+## 0. 快速开始
 ```bash
-python -u run_attitude_fast15.py
+# 生成全部图（Halo/优化/定轨），默认 1~3 分钟
+python run_all.py
+
+# 只跑某一部分
+python run_all.py halo
+python run_all.py pareto
+python run_all.py od
 ```
-图片输出目录：`attitude_ultrafast/outputs/`。
+生成的高级图保存在 `deep_space_lab/outputs/`。下文对**每张图**逐一解释并给出所用的**数学表达式（LaTeX）**。
 
 ---
 
-## 1. 动力学模型（Quaternion + 刚体转动）
+## 1. 模型与符号
 
-**四元数运动学**
-\[
-\dot{\mathbf{q}} \;=\; \tfrac{1}{2}\,\mathbf{q}\otimes \begin{bmatrix}0\\ \boldsymbol\omega\end{bmatrix},
-\qquad
-\mathbf{q}=\begin{bmatrix}q_w \\ q_x \\ q_y \\ q_z\end{bmatrix},\ \ \|\mathbf{q}\|=1.
-\]
+### 1.1 CRTBP（地月）旋转坐标系
+无量纲化后，地月质量参数记为 \\(\mu\\)，原点为系统质心，主天体在 \\((-\,\mu,0,0)\\) 与 \\((1-\mu,0,0)\\)。设状态 \\(\mathbf{x}=[x,y,z,v_x,v_y,v_z]^T\\)。势函数
+$$
+U(x,y,z)\;=\;\tfrac12\,(x^2+y^2)\;+\;\frac{1-\mu}{r_1}\;+\;\frac{\mu}{r_2},
+\quad
+r_1=\Big\|\begin{bmatrix}x+\mu\\y\\z\end{bmatrix}\Big\|,\;
+r_2=\Big\|\begin{bmatrix}x-(1-\mu)\\y\\z\end{bmatrix}\Big\|.
+$$
 
-**刚体动力学（惯量 $J$ 可能随温度缓慢变化）**
-\[
-J(t)\,\dot{\boldsymbol\omega} \;+\; \boldsymbol\omega \times \bigl(J(t)\,\boldsymbol\omega\bigr)
-\;=\; \boldsymbol\tau_c \;+\; \boldsymbol\tau_d,
-\]
-其中 $\boldsymbol\tau_c$ 为控制力矩，$\boldsymbol\tau_d$ 为外部摄动力矩（如 SRP、热弹性等）。
+CRTBP 方程：
+$$
+\begin{aligned}
+\ddot x - 2\dot y &= \frac{\partial U}{\partial x},\\
+\ddot y + 2\dot x &= \frac{\partial U}{\partial y},\\
+\ddot z &= \frac{\partial U}{\partial z}.
+\end{aligned}
+$$
 
-**热致惯量变化（对角近似）**
-\[
-J(t) \;=\; \mathrm{diag}\!\Big(J_{x0}\,[1+\alpha_x\sin(\nu t+\phi_x)],\ 
-J_{y0}\,[1+\alpha_y\sin(\nu t+\phi_y)],\ 
-J_{z0}\,[1+\alpha_z\sin(\nu t+\phi_z)]\Big).
-\]
+记 \\(\mathbf{f}(\mathbf{x})=[v_x,v_y,v_z,\;a_x,a_y,a_z]^T\\)，其雅可比（真导数）
+$$
+\mathbf{A}(\mathbf{x})=\frac{\partial \mathbf{f}}{\partial \mathbf{x}}\in\mathbb{R}^{6\times 6},
+\quad
+\text{代码中显式构造 } \frac{\partial^2 U}{\partial x_i\partial x_j}.
+$$
 
-**SRP 扭矩代理**（以太阳方向 $\hat{\mathbf{s}}$ 与偏心力臂 $\mathbf{r}_c$ 生成）
-\[
-\boldsymbol\tau_{\mathrm{SRP}} \;=\; c_{\mathrm{srp}}\,A\,\bigl(\mathbf{r}_c \times \hat{\mathbf{s}}_B\bigr),
-\quad \hat{\mathbf{s}}_B = R_{IB}(\mathbf{q})^\top \hat{\mathbf{s}}_I.
-\]
+**Jacobi 能量（近似口径）**：
+$$
+C \;\approx\; 2\,U(\mathbf{r}) \;-\; \|\mathbf{v}\|^2,
+$$
+用于族线能量–周期关系的对比。
 
-> 实现上，积分器采用**半隐式欧拉**：先更新角速度再指数映射更新四元数，保证数值稳定与 $\|\mathbf{q}\|=1$ 归一。代码见 `core/dynamics.py::step_attitude`。
+### 1.2 复杂摄动力：SRP 与 J2
+- **SRP**（简化点源近似，常数系数 \\(c_{\rm srp}\\)）：
+$$
+\mathbf{a}_{\rm SRP}
+\;=\;
+c_{\rm srp}\,\frac{\mathbf{r}-\mathbf{r}_\odot}{\|\mathbf{r}-\mathbf{r}_\odot\|^3},
+$$
+其位置雅可比
+$$
+\frac{\partial \mathbf{a}_{\rm SRP}}{\partial \mathbf{r}}
+=
+c_{\rm srp}\Big(\frac{\mathbf{I}}{d^3}-\frac{3(\mathbf{r}-\mathbf{r}_\odot)(\mathbf{r}-\mathbf{r}_\odot)^T}{d^5}\Big),\quad d=\|\mathbf{r}-\mathbf{r}_\odot\|.
+$$
 
----
+- **J2 扁率项**（对地/对月分别计算，向量式简化）：
+$$
+\mathbf{a}_{J_2}
+\;=\;
+-\frac{\mu J_2 R^2}{r^5}
+\Big[\Big(1-5\frac{z^2}{r^2}\Big)\mathbf{r} + 2 z\, r\,\hat{\mathbf{k}}\Big],
+\qquad r=\|\mathbf{r}\|, 
+$$
+其雅可比在代码中按位置做数值真导数以匹配该形式。
 
-## 2. 误差表示与离散化
+> **组合动力学**：\\(\mathbf{f}=\mathbf{f}_{\rm CRTBP}+\mathbf{a}_{\rm SRP}+\mathbf{a}_{J_2({\rm Earth})}+\mathbf{a}_{J_2({\rm Moon})}\\)。
 
-**姿态误差四元数**
-\[
-\mathbf{q}_e \;=\; \mathbf{q}_d^{-1}\otimes \mathbf{q}, \qquad
-\text{小角度误差向量}\ \ \mathbf{e}\ \approx\ 2\,\mathrm{vec}(\mathbf{q}_e)\cdot \mathrm{sgn}(q_{e,w}).
-\]
-
-小角度线性化得到**误差状态** $\mathbf{x}=[\mathbf{e}^\top,\ \boldsymbol\omega^\top]^\top$ 的连续近似：
-\[
-\dot{\mathbf{e}} \approx \boldsymbol\omega,\qquad
-J\,\dot{\boldsymbol\omega} \approx \boldsymbol\tau_c + \boldsymbol\tau_d.
-\]
-
-**一阶保持离散化**（采样时间 $T_s$）：
-\[
-\mathbf{x}_{k+1} \;=\; A_d\,\mathbf{x}_k + B_d\,\mathbf{u}_k,\quad
-A_d=\begin{bmatrix}I & T_s I\\ 0 & I\end{bmatrix},\ 
-B_d=\begin{bmatrix}0\\ T_s J^{-1}\end{bmatrix}.
-\]
-
----
-
-## 3. 传感器/执行器故障模型
-
-- **陀螺偏置跳变**：
-  \[ \tilde{\boldsymbol\omega}(t)=\boldsymbol\omega(t)+\mathbf{b}(t)+\boldsymbol\eta,\quad
-  \mathbf{b}(t)=\sum_i \mathbf{b}_i\,\mathbf{1}_{t\ge t_i}. \]
-- **执行器饱和**：
-  \[ \mathbf{u}=\mathrm{sat}(\mathbf{u}_{\mathrm{cmd}},\ \mathbf{u}_{\max}). \]
-- **轴卡滞**：某一轴 $u_j\equiv 0$。
-
-这些故障/约束在 `run_attitude_fast15.py::run_episode` 中统一注入。
-
----
-
-## 4. 控制策略
-
-### 4.1 LQR（离散）
-目标
-\[
-\min_{\{\mathbf{u}_k\}}\ \sum_{k=0}^{N-1}\bigl(\mathbf{x}_k^\top Q\,\mathbf{x}_k
-+ \mathbf{u}_k^\top R\,\mathbf{u}_k\bigr)\ +\ \mathbf{x}_N^\top P\,\mathbf{x}_N
-\quad\text{s.t.}\quad \mathbf{x}_{k+1}=A_d\mathbf{x}_k+B_d\mathbf{u}_k.
-\]
-解由 Riccati 方程给出并形成**恒定增益** $\mathbf{u}=-K\mathbf{x}$。
-
-### 4.2 H∞-like 稳健调权（轻量代理）
-为快速对比稳健性，使用放大 $Q$、收缩 $R$ 的“**H∞-like**”代理（非严格 H∞），提升状态抑制与阻尼：
-\[
-Q'=\alpha Q,\ R'=\beta R,\ \alpha>1,\ 0<\beta\le 1.
-\]
-
-### 4.3 MPC（有限时域预览 + 投影）
-采用**无约束 LQR 预览**（时变增益序列 $K_k$）给出 $u_0$，再对 $\mathrm{sat}(\cdot)$ 投影以满足饱和：
-\[
-J = \sum_{k=0}^{N_p-1}\!\bigl(\mathbf{x}_k^\top Q\mathbf{x}_k + \mathbf{u}_k^\top R\mathbf{u}_k\bigr)
-+ \mathbf{x}_{N_p}^\top P\mathbf{x}_{N_p},\qquad \mathbf{u}_0 = -K_0\,\mathbf{x}_0,\ 
-\mathbf{u}=\mathrm{sat}(\mathbf{u}_0).
-\]
-
-> 端管（terminal tube）用**椭圆集**近似：
-\[
-\mathcal{E}=\bigl\{\mathbf{e}\in\mathbb{R}^3\ \big|\ \mathbf{e}^\top P_{\mathrm{tube}}\mathbf{e}\le 1\bigr\},
-\]
-并以图形方式呈现其约束形状（图 6）。
-
-### 4.4 自适应增益（对角参数 $\boldsymbol\theta$）
-对 MPC 力矩加入**自适应项**：
-\[
-\mathbf{u} \;=\; \mathbf{u}_{\mathrm{MPC}} \;+\; \Theta\,\boldsymbol\omega,\qquad
-\Theta=\mathrm{diag}(\boldsymbol\theta).
-\]
-参数更新（离散 $\sigma$-修正）：
-\[
-\boldsymbol\theta_{k+1}\;=\;\boldsymbol\theta_k\;+\;\gamma\,\Phi(\mathbf{x}_k)\,\mathbf{e}_k\;-\;\sigma\,\boldsymbol\theta_k,
-\]
-其中 $\Phi$ 为回归矩阵（本实现取 $\Phi=\mathrm{diag}(|\boldsymbol\omega|+\varepsilon)$），$\gamma>0$ 为学习率，$\sigma>0$ 为抑制漂移的 $\sigma$-修正。
-
-> **稳定性直觉**：选取复合 Lyapunov 候选
-\[
-V = \mathbf{x}^\top P \mathbf{x} + \tfrac{1}{\gamma}\,(\boldsymbol\theta-\boldsymbol\theta^\star)^\top(\boldsymbol\theta-\boldsymbol\theta^\star),
-\]
-在 $\sigma$-修正下保证参数有界，闭环误差能量下降（详见 MRAC/L1 相关理论；此处给出轻量近似实现以维持**极速可跑**）。
+### 1.3 变分方程与 STM/单子矩阵
+状态转移矩阵 \\(\Phi\\) 满足
+$$
+\dot{\Phi}(t)=\mathbf{A}(\mathbf{x}(t))\,\Phi(t),\quad \Phi(0)=\mathbf{I}_{6}.
+$$
+**单子矩阵**（周期轨道的一周 STM）：\\(\Phi(T)\\)。其**谱半径**
+$$
+\rho(\Phi(T))=\max_i|\lambda_i(\Phi(T))|,
+$$
+用于稳定性/发散性的判据与族线分析。
 
 ---
 
-## 5. 评测指标与“顶会级”图形
+## 2. 周期 Halo 轨道与差分修正
 
-**误差峰值**（越小越好）：
-\[
-E_{\infty} \;=\; \mathrm{quantile}_{0.95}\bigl(\|\mathbf{e}(t)\|\bigr).
-\]
+### 2.1 初猜与周期性条件
+从 L1/L2 的 Lyapunov 出发，以 \\(A_z\\) 作为纵向幅值，构造 Halo 初猜 \\(\mathbf{x}_0, T\\)。周期性条件（示例）：
+$$
+\mathbf{g}=\begin{bmatrix} y(T/2) \\ v_x(T/2) \end{bmatrix}
+=\mathbf{0}.
+$$
 
-**控制能量**（离散求和的二范数）：
-\[
-E_u \;=\; \sum_k \|\mathbf{u}_k\|_2^2.
-\]
+### 2.2 单段（半周）差分修正（Single Shooting）
+线性化敏感度
+$$
+\Delta\mathbf{g} \approx 
+\begin{bmatrix}
+\Phi_{y,\,v_y}(T/2)\\[2pt]
+\Phi_{v_x,\,v_y}(T/2)
+\end{bmatrix}\Delta v_y(0).
+$$
+用最小二乘更新 \\(\Delta v_y\\) 迭代直至 \\(\|\mathbf{g}\|\\) 收敛。
 
-**故障鲁棒性**（故障场景误差的高分位）：
-\[
-R_{\mathrm{fault}} \;=\; \mathrm{quantile}_{0.95}\bigl(\|\mathbf{e}(t)\|\ \text{under faults}\bigr).
-\]
+### 2.3 多段差分修正（Multiple Shooting）
+将周期分割为 \\(N\\) 段，端点连续性残差
+$$
+\mathbf{R}_i=\mathbf{x}(t_{i+1}^-)-\mathbf{x}(t_{i+1}^+)=\mathbf{0},
+$$
+全局以块结构线性化并用牛顿/最小二乘更新各段起点变量。
 
-这三者组成**三目标**“峰值误差/能量/鲁棒性”的**Pareto 前沿**（图 5）。
-
----
-
-## 6. 复现实验清单（15 张高级图）
-
-> 对应 `run_attitude_fast15.py` 的输出文件，均在 `attitude_ultrafast/outputs/`。
-
-1. **fig01\_sphere\_pointing.png**：单位球上指向轨迹（四算法叠加，颜色区分）。  
-2. **fig02\_triad\_frames.png**：初/中/末三时刻的机体坐标轴三元组（3D 箭簇）。  
-3. **fig03\_sphere\_heat.png**：Lambert 球面热力图（随时间权重衰减）。  
-4. **fig04\_polar\_torque\_LQR.png / \_MPC\_ADAPT.png**：控制力矩极坐标密度（方向–幅值分布核密度）。  
-5. **fig05\_pareto\_algos.png**：三目标 Pareto 3D（四算法各一点评估）。  
-6. **fig06\_mpc\_tube.png**：MPC 端管（椭圆等高线示意）。  
-7. **fig07\_eig\_locus.png**：闭环特征值复平面散点（惯量缩放族）。  
-8. **fig08\_spectrogram.png**：误差 STFT “谱图”（MPC+自适应）。  
-9. **fig09\_mc\_density.png**：Monte Carlo 终态指向球面密度（故障+扰动）。  
-10. **fig10\_stream\_fields.png**：线性化误差场流线（LQR vs MPC）。  
-11. **fig11\_fault\_mosaic.png**：故障时间轴马赛克热图（卡滞/偏置跳变）。  
-12. **fig12\_theta\_traj.png**：自适应参数演化 3D 轨迹。  
-13. **fig13\_saturation.png**：反作用轮饱和热图（轴×时间）。  
-14. **fig14\_lyap.png**：Lyapunov 函数等高线（$(e_y,\omega_y)$ 平面）。  
-15. **fig15\_margin\_polar.png**：稳定裕度极坐标密度（谱半径 proxy）。
+### 2.4 直接配点（Hermite–Simpson）
+网格 \\(t_k\\)，离散**缺陷约束**：
+$$
+\mathbf{x}_{k+2}-\mathbf{x}_k - \frac{h}{6}\big(\mathbf{f}_{k}+4\mathbf{f}_{k+1}+\mathbf{f}_{k+2}\big)=\mathbf{0},
+\quad h=t_{k+2}-t_k.
+$$
 
 ---
 
-## 7. 复现实验参数（默认）
-
-- 采样时间：$T_s=0.05\ \mathrm{s}$，仿真时长 $T=15\ \mathrm{s}$。  
-- 惯量标称：$J_0=\mathrm{diag}(0.12,\ 0.09,\ 0.08)\ \mathrm{kg\,m^2}$；热致幅度 $\alpha\in[0.1,0.3]$。  
-- 饱和上限：$u_{\max}=[0.08,\ 0.06,\ 0.05]\ \mathrm{N\,m}$。  
-- LQR：$Q=\mathrm{diag}(50,50,50,\,2,2,2)$，$R=\mathrm{diag}(0.6,0.6,0.6)$。  
-- H∞-like：$\alpha=3.0,\ \beta=0.8$（对 $Q,R$ 的缩放）。  
-- MPC：预测域 $N_p=10$，预览 LQR 时变增益，后投影至饱和。  
-- 自适应：$\gamma=0.15,\ \sigma=0.05$，$\Phi=\mathrm{diag}(|\boldsymbol\omega|+\varepsilon)$。  
-- 故障：$t=5\ \mathrm{s}$ 时陀螺偏置跳变，$y$ 轴执行器卡滞示例。
+## 3. 复杂摄动力与任务约束
+在 Halo 一周上分别计算**无摄动**与**SRP/J2 打开**的轨道，比较漂移量与闭合性退化。可扩展加入中途脉冲/低推力段（此演示版给出双脉冲示例与多目标优化接口）。
 
 ---
 
-## 8. 与**顶会/顶刊**接轨的升级建议
+## 4. 多目标轨道优化（NSGA‑II）
+### 4.1 决策变量与目标
+双脉冲转移（示例）决策向量
+$$
+\mathbf{y}=[\,t_1,\;\Delta\mathbf{v}_1,\;t_{\rm coast},\;\Delta\mathbf{v}_2\,]^T.
+$$
+三目标：
+$$
+\begin{aligned}
+J_{\Delta V}&=\|\Delta\mathbf{v}_1\|+\|\Delta\mathbf{v}_2\|,\\
+J_{\rm TOF}&=t_1+t_{\rm coast}+t_{\rm tail},\\
+J_{\rm rob}&=\|\mathbf{x}(T)-\mathbf{x}^\star\| \quad (\text{鲁棒性代理}).
+\end{aligned}
+$$
 
-1. **真约束 MPC（QP）**：用 PGD/ADMM 或 OSQP 将饱和/速率/端管约束显式化；对比“预览+投影”。  
-2. **MRAC / L1 自适应**：加入投影算子与低通滤波，给出**严格稳定性证明**与域内鲁棒性界。  
-3. **感知–控制闭环**：接入星敏/陀螺融合（EKF/UKF），报告**可观测性谱**、**CRB 下界**与闭环性能。  
-4. **高保真摄动**：SRP 几何更真实，热–结构–光学耦合；加入**轮系/磁控**混合执行链。  
-5. **故障诊断**：增设 FDI（残差生成/投票），并给出**误检/漏检 ROC 曲线**与**再配置控制**效果。  
-6. **实验统计**：更大规模 Monte Carlo，报告 **Pareto 前沿**的**置信带/超体积**收敛。
+### 4.2 非支配排序与拥挤度
+\\(\mathbf{a}\\) **支配** \\(\mathbf{b}\\) 若 \\(\mathbf{a}\\) 在所有目标上不劣且在至少一项上更优。NSGA‑II 采用分级前沿与拥挤度保持多样性。
 
----
-
-## 9. 代码结构
-
-```
-attitude_ultrafast/
-  core/dynamics.py          # 四元数/刚体/摄动与故障注入
-  controllers/lqr_hinf.py   # LQR 与 H∞-like 轻量稳健调权
-  controllers/mpc_adapt.py  # MPC 预览 + 饱和投影；自适应增益
-  plots/advplots.py         # 球面/极坐标/流线/复平面/谱图等绘图工具
-  run_attitude_fast15.py    # 一键生成 15 张高级图
-  outputs/                  # 结果图片（运行后生成）
-  README_detailed.md        # 本说明
-```
-
----
-
-## 10. 复现实用技巧
-
-- 使用无交互后端：脚本中已 `matplotlib.use("Agg")`，确保**只出图不弹窗**。  
-- 观察进度：`python -u` 以**取消缓冲**，实时打印。  
-- 随机性：可固定 `seed` 重复结果（代码中示例 `seed=1/2/…`）。  
-- 性能：本仓库定位“**秒级出图**”，如需更高精度，可逐步加长 $N_p$、减小 $T_s$、显式 QP。
+### 4.3 超体积（Hypervolume）
+以参考点 \\(\mathbf{r}\\) 计，前沿 \\(\mathcal{F}\\) 的体积
+$$
+HV(\mathcal{F})= \operatorname{Vol}\Big(\bigcup_{\mathbf{f}\in\mathcal{F}} [f_1,r_1]\times[f_2,r_2]\times[f_3,r_3]\Big),
+$$
+作为收敛性与多样性的综合指标。
 
 ---
 
-## 11. 术语速查
+## 5. 精密定轨（OD）与可观测性
+### 5.1 观测模型
+距离、距离率与方位角/仰角：
+$$
+\rho=\|\mathbf{r}\|,\qquad
+\dot\rho=\frac{\mathbf{r}\cdot\mathbf{v}}{\|\mathbf{r}\|},\qquad
+\boldsymbol{\theta}=\begin{bmatrix}\mathrm{az}\\ \mathrm{el}\end{bmatrix}
+=
+\begin{bmatrix}
+\operatorname{atan2}(y,x)\\[2pt]
+\operatorname{atan2}(z,\sqrt{x^2+y^2})
+\end{bmatrix}.
+$$
 
-- **端管（terminal tube）**：MPC 中用于保证末端/鲁棒性的终端可控集合，常以椭球/多面体近似。  
-- **$\sigma$-修正**：自适应律中的泄露项，抑制参数漂移、提高有界性。  
-- **CRB（Cramér–Rao Bound）**：估计方差下界，常用于观测系统可辨识度评估。
+### 5.2 Batch LS（线性化常规）
+最小化
+$$
+J=\sum_k \big(\mathbf{z}_k-\mathbf{h}(\mathbf{x}_k)\big)^T\mathbf{R}^{-1}\big(\mathbf{z}_k-\mathbf{h}(\mathbf{x}_k)\big).
+$$
+法方程（一次线性化）
+$$
+(\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H})\,\delta\mathbf{x}=\mathbf{H}^T\mathbf{R}^{-1}\mathbf{r},
+\quad \mathbf{P}=(\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H})^{-1}.
+$$
+\\(\mathbf{P}\\) 亦为 CRB 近似下界。
+
+### 5.3 EKF（演示）
+时间/量测更新
+$$
+\begin{aligned}
+\mathbf{x}_{k|k-1}&=\mathbf{f}(\mathbf{x}_{k-1}),&
+\mathbf{P}_{k|k-1}&=\mathbf{F}\mathbf{P}_{k-1}\mathbf{F}^T+\mathbf{Q},\\
+\mathbf{K}_k&=\mathbf{P}_{k|k-1}\mathbf{H}^T(\mathbf{H}\mathbf{P}_{k|k-1}\mathbf{H}^T+\mathbf{R})^{-1},&
+\mathbf{x}_k&=\mathbf{x}_{k|k-1}+\mathbf{K}_k\big(\mathbf{z}_k-\mathbf{h}(\mathbf{x}_{k|k-1})\big).
+\end{aligned}
+$$
 
 ---
 
-祝你开题顺利、图好看、结果硬！如需**论文模板版**（自动导出 PDF/EPS、按 A4/双栏列宽配置字体/线宽/标注），可在本仓库上继续扩展。
+## 6. 图表索引与释义（文件名 → 含义）
+
+> 下文文件名与 `run_all.py` 输出一致。若你修改了参数/网格，图片序号可能略有不同。
+
+### 6.1 Halo 套件（`halo_suite_*.png`）
+1. **`halo_suite_00.png` — Period vs Amplitude**  
+   展示 Halo 族线上**周期 \\(T\\)** 随纵向幅值 \\(A_z\\) 的变化趋势。横轴 \\(A_z\\)，纵轴 \\(T\\)。  
+   相关量：\\(T=2\pi/\nu(A_z)\\) 的数值修正结果。
+
+2. **`halo_suite_01.png` — Energy–Period**  
+   族线**能量–周期**关系。横轴 Jacobi 近似能量 \\(C=2U-\|v\|^2\\)，纵轴 \\(T\\)。  
+   反映能量面与周期轨道的对应。
+
+3. **`halo_suite_02.png` — Monodromy Spectral Radius**  
+   单子矩阵 \\(\Phi(T)\\) 的谱半径 \\(\rho(\Phi(T))\\) 随 \\(A_z\\) 的变化：
+   $$\rho(\Phi(T))=\max_i|\lambda_i|.$$
+   用于判定线性稳定性（\\(\rho\le 1\\)）与不稳定模态强度。
+
+4. **`halo_suite_03.png` — Residual Norm per Iteration**  
+   **Multiple shooting** 与 **Hermite–Simpson collocation** 的**残差范数–迭代**曲线：
+   $$\|\mathbf{R}^{(k)}\|\ \text{vs.}\ k.$$
+   对比两法的收敛速度/稳健性。
+
+5. **`halo_suite_04.png` — Compute Time**  
+   两方法一次求解的计算耗时柱状图，体现数值效率差异。
+
+6. **`halo_suite_05.png` — SRP/J2 Drift**  
+   关闭摄动力（CRTBP）与打开 **SRP+J2** 下的**同轨道对比**，可见闭合性与相位漂移变化。
+
+### 6.2 多目标优化（`pareto_*.png`）
+7. **`pareto_00.png` — Pareto Front (ΔV–TOF–Robustness)**  
+   **三目标前沿**三维散点，坐标为 \\((J_{\Delta V},J_{\rm TOF},J_{\rm rob})\\)。  
+   非支配解定义参见 §4。
+
+8. **`pareto_01.png` — Hypervolume Convergence**  
+   NSGA‑II 代际的**超体积** \\(HV\\) 收敛曲线：
+   $$HV_g=HV(\mathcal{F}_g).$$
+   反映前沿质量的整体提升。
+
+9. **`pareto_02.png` — ΔV Composition (Best Solutions)**  
+   按 \\(J_{\Delta V}\\) 最优的若干解，将 \\(\Delta V=\|\Delta\mathbf{v}_1\|+\|\Delta\mathbf{v}_2\|\\) **分解**为两次脉冲的堆叠柱状。
+
+### 6.3 精密定轨（`od_*.png`）
+10. **`od_00.png` — OD Residuals**  
+    Range/Doppler/方位角/仰角的**残差序列**：
+    $$\mathbf{r}_k=\mathbf{z}_k-\mathbf{h}(\hat{\mathbf{x}}_{k|k-1}).$$
+    可用于频谱/系统误差分析（本演示展示时域）。
+
+11. **`od_01.png` — Final 2σ Covariance Ellipse**  
+    末历元位置协方差 \\(\mathbf{P}_{xx}\\) 的 **2σ 椭圆**。CRB 下界：
+    $$\mathbf{P}\succeq (\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H})^{-1}.$$
+    直观展示可观测性与不确定性方向。
+
+> **合计** 11 张高级图。若希望达到“15+”，可在 `run_all.py` 中：  
+> (i) 追加 **λ\_{min/max} vs. A_z**（把单子矩阵特征值区间单独作图）；  
+> (ii) 输出 **Energy–Amplitude** 与 **TOF–Amplitude** 的补充图；  
+> (iii) 绘制 **收敛半径热图**（对不同初猜/摄动力开关批量运行）。
+
+---
+
+## 7. 再现实验清单（参数可在各模块顶部调整）
+- **族线精化**：`halo_richardson_like` 的 \\(A_z\\) 栅格更密（如 0.01~0.12，步长 0.005），生成更平滑的能量–周期–谱半径曲线。  
+- **多段 vs 配点**：提高 `segments/nodes`，比较残差曲线与耗时的交叉点，统计**成功率/收敛半径**。  
+- **SRP/J2 灵敏度**：扫描 \\(c_{\rm srp},J2\_e,J2\_m\\)，量化**闭合误差 vs. 摄动强度**。  
+- **多目标**：放宽脉冲上界或加入低推力段（伪谱/分段恒推），观察 **Pareto 前沿拓展**与 **HV** 变化。  
+- **OD 可辨识度**：加/不加机动、加/不加 SRP 的测量仿真，对比 **CRB/2σ** 体积。
+
+---
+
+## 8. 工程化建议（冲顶会/顶刊）
+- 将 **multiple shooting** 扩展为**全状态校正 + 分段 STM 串接**，并做**不变子空间一致性**检验（\\(\|\sin\angle(\mathcal{E}^{s,u}_{\rm num},\mathcal{E}^{s,u}_{\rm ref})\|\\) 曲线）。  
+- 用稀疏线性代数实现 **Hermite–Simpson NLP** 的 KKT 牛顿步，绘制**KKT 残差**与**谱半径**对比。  
+- 将鲁棒性目标从终端偏差扩展为 **灵敏度范数**（如 \\(\|\Phi(T)\|\_2\\) 或某方向投影），并在 **NSGA‑II** 与 **梯度法** 间对比收敛与稳定性。  
+- OD 中引入 **UKF/批处理白化** 与 **光谱残差分析**，展示系统误差（未建模 SRP/J2/机动）对可观测性的影响。
+
+---
+
+## 9. 生成代码与结构小结
+- **STM 真导数**：在 `integrators/propagate_with_stm.py` 中共同传播 \\(\mathbf{x},\Phi\\)；\\(\dot\Phi=A(\mathbf{x})\Phi\\)。  
+- **单子矩阵**：`monodromy(x0,T,...)` 直接返回 \\(\Phi(T)\\)。  
+- **修正方法**：`halo/diff_correction.py` 与 `solvers/*`；**多段**与**配点**可并列对比。  
+- **优化**：`mission/transfer_opt.py` 实现轻量 **NSGA‑II**；前沿与超体积在 `plots/plotting.py` 可视化。  
+- **定轨**：`od/estimation.py` 的 Batch LS/EKF 与 CRB。
+
+---
+
+### 引用与致谢
+本项目为教学/研究演示实现，公式与思路取材于经典深空力学、变分法、数值优化与估计理论的通用框架；工程化与更高保真度实现（如非圆三体、真实 SRP 几何、严格 J2 在旋转系的推导、稀疏 KKT 求解等）可在此基础上继续拓展。
