@@ -1,7 +1,7 @@
 
-# Deep‑Space Lab（高级版 README）
+# Deep‑Space Lab
 **Halo 族线 + STM 真导数 + 多段/配点修正 + SRP/J2 摄动力 + 多目标 NSGA‑II + 精密定轨（Batch/EKF/CRB）**  
-> 面向顶会/顶刊指标的**可运行研究底座**。仅依赖：`numpy`、`matplotlib`。所有算法与可视化在仓库内自包含。
+> **可运行研究底座**。仅依赖：`numpy`、`matplotlib`。所有算法与可视化在仓库内自包含。
 
 ---
 
@@ -251,7 +251,7 @@ $$
     $$\mathbf{P}\succeq (\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H})^{-1}.$$
     直观展示可观测性与不确定性方向。
 
-> **合计** 11 张高级图。若希望达到“15+”，可在 `run_all.py` 中：  
+> **合计** 11 张图。若希望达到“15+”，可在 `run_all.py` 中：  
 > (i) 追加 **λ\_{min/max} vs. A_z**（把单子矩阵特征值区间单独作图）；  
 > (ii) 输出 **Energy–Amplitude** 与 **TOF–Amplitude** 的补充图；  
 > (iii) 绘制 **收敛半径热图**（对不同初猜/摄动力开关批量运行）。
@@ -267,7 +267,7 @@ $$
 
 ---
 
-## 8. 工程化建议（冲顶会/顶刊）
+## 8. 工程化建议
 - 将 **multiple shooting** 扩展为**全状态校正 + 分段 STM 串接**，并做**不变子空间一致性**检验（\\(\|\sin\angle(\mathcal{E}^{s,u}_{\rm num},\mathcal{E}^{s,u}_{\rm ref})\|\\) 曲线）。  
 - 用稀疏线性代数实现 **Hermite–Simpson NLP** 的 KKT 牛顿步，绘制**KKT 残差**与**谱半径**对比。  
 - 将鲁棒性目标从终端偏差扩展为 **灵敏度范数**（如 \\(\|\Phi(T)\|\_2\\) 或某方向投影），并在 **NSGA‑II** 与 **梯度法** 间对比收敛与稳定性。  
@@ -281,6 +281,12 @@ $$
 - **修正方法**：`halo/diff_correction.py` 与 `solvers/*`；**多段**与**配点**可并列对比。  
 - **优化**：`mission/transfer_opt.py` 实现轻量 **NSGA‑II**；前沿与超体积在 `plots/plotting.py` 可视化。  
 - **定轨**：`od/estimation.py` 的 Batch LS/EKF 与 CRB。
+<img width="960" height="640" alt="fig_02_streamplot" src="https://github.com/user-attachments/assets/fe547426-f891-4a7d-bca9-69604744a0a7" />
+<img width="960" height="768" alt="fig_03_halo3d" src="https://github.com/user-attachments/assets/141c5a38-3d4d-4fd0-b6a8-60a1d940a257" />
+<img wi<img width="880" height="832" alt="fig_10_polar_heat" src="https://github.com/user-attachments/assets/d08f58dc-5c39-41c0-9c22-8ea9cec15cf9" />
+dth="960" height="640" alt="fig_06_drift_heatmap" src="https://github.com/user-attachments/assets/531bb041-9b49-46de-9ef4-6bb7e90b9853" />
+<img w<img width="800" height="800" alt="fig_15_eigs_complex" src="https://github.com/user-attachments/assets/42f88c88-2110-4627-bbe0-022d41223117" />
+idth="960" height="736" alt="fig_11_hv_surface" src="https://github.com/user-attachments/assets/c9ceabc9-53c7-4347-9242-3d808971e17c" />
 
 ---
 
