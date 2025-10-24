@@ -1,7 +1,7 @@
 
-# Deep‑Space Lab（高级版 README）
+# Deep‑Space Lab
 **Halo 族线 + STM 真导数 + 多段/配点修正 + SRP/J2 摄动力 + 多目标 NSGA‑II + 精密定轨（Batch/EKF/CRB）**  
-> 面向顶会/顶刊指标的**可运行研究底座**。仅依赖：`numpy`、`matplotlib`。所有算法与可视化在仓库内自包含。
+> **可运行研究底座**。仅依赖：`numpy`、`matplotlib`。所有算法与可视化在仓库内自包含。
 
 ---
 
@@ -15,7 +15,7 @@ python run_all.py halo
 python run_all.py pareto
 python run_all.py od
 ```
-生成的高级图保存在 `deep_space_lab/outputs/`。下文对**每张图**逐一解释并给出所用的**数学表达式（LaTeX）**。
+生成的图保存在 `deep_space_lab/outputs/`。
 
 ---
 
@@ -267,7 +267,7 @@ $$
 
 ---
 
-## 8. 工程化建议（冲顶会/顶刊）
+## 8. 工程化建议
 - 将 **multiple shooting** 扩展为**全状态校正 + 分段 STM 串接**，并做**不变子空间一致性**检验（\\(\|\sin\angle(\mathcal{E}^{s,u}_{\rm num},\mathcal{E}^{s,u}_{\rm ref})\|\\) 曲线）。  
 - 用稀疏线性代数实现 **Hermite–Simpson NLP** 的 KKT 牛顿步，绘制**KKT 残差**与**谱半径**对比。  
 - 将鲁棒性目标从终端偏差扩展为 **灵敏度范数**（如 \\(\|\Phi(T)\|\_2\\) 或某方向投影），并在 **NSGA‑II** 与 **梯度法** 间对比收敛与稳定性。  
